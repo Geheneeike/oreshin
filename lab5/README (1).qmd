@@ -1,0 +1,241 @@
+---
+title: "Практика 005"
+author: "oreshin_ilya@bk.ru"
+date: "2024-20-12"
+format:
+  md:
+    output-file: "README.md"
+editor: "visual"
+---
+
+Исследование информации о состоянии беспроводных сетей.
+
+## Цель
+
+1.  Получить знания о методах исследования радиоэлектронной обстановки.
+
+2.  Составить представление о механизмах работы Wi-Fi сетей на канальном и сетевом уровне модели OSI.
+
+3.  Зекрепить практические навыки использования языка программирования R для\
+    обработки данных.
+
+4.  Закрепить знания основных функций обработки данных экосистемы tidyverseязыка R.
+
+## Исходные данные
+
+-   Компьютер
+
+-   ОС Windows
+
+-   Rstudio
+
+-   Библиотека readr
+
+-   Данные P2_wifi_data, собранные с помощью анализатора беспроводного трафика airodump-ng
+
+-   Github
+
+## Общий план выполнения
+
+1.  Подготовка данных
+
+2.  Анализ точек доступа
+
+3.  Анализ данных клиентов
+
+## Содержание ЛР
+
+### Шаг 1. Подготовка данных
+
+Импортированы данные о беспроводном трафике.
+
+```{r}
+Data <- read.csv('./P2_wifi_data.csv')
+head(Data)
+```
+
+Формат CSV лога airodump-ng меняется внутри файла (имеет разное число столбцов). По сути, это два разных датасета:
+
+-   датасет 1 – анонсы беспроводных точек доступа;
+
+-   датасет 2 – запросы на подключение клиентов к известным им точкам доступа.\
+    Разъеденим данные на два датасета.
+
+Readr является частью базовой библиотеки tidyverse, поэтому вы можете загрузить его с помощью:
+
+```{r}
+library(tidyverse)
+library(readr)
+```
+
+```{r}
+access_points <- read.csv('./P2_wifi_data.csv', nrows = 167)
+head(access_points)
+
+```
+
+```{r}
+client_requests <- read.csv('./P2_wifi_data.csv', skip = 169)
+head(client_requests)
+```
+
+Приведены датасеты в вид “аккуратных данных”, преобразованы типы столбцов в соответствии с типом данных.
+
+```{r}
+access_points <- access_points %>% 
+  mutate_at(vars(BSSID, Privacy, Cipher, Authentication, LAN.IP, ESSID), trimws) %>%
+  mutate_at(vars(BSSID, Privacy, Cipher, Authentication, LAN.IP, ESSID), na_if, "")
+
+access_points$First.time.seen <- as.POSIXct(access_points$First.time.seen, format = "%Y-%m-%d %H:%M:%S")
+access_points$Last.time.seen <- as.POSIXct(access_points$Last.time.seen, format = "%Y-%m-%d %H:%M:%S")
+
+client_requests <- client_requests %>% 
+  mutate_at(vars(Station.MAC, BSSID, Probed.ESSIDs), trimws) %>%
+  mutate_at(vars(Station.MAC, BSSID, Probed.ESSIDs), na_if, "")
+
+client_requests$First.time.seen <- as.POSIXct(client_requests$First.time.seen, format = "%Y-%m-%d %H:%M:%S")
+client_requests$Last.time.seen <- as.POSIXct(client_requests$Last.time.seen, format = "%Y-%m-%d %H:%M:%S")
+
+```
+
+Общая структура данных по датасетам:\
+
+```{r}
+glimpse(access_points)
+```
+
+```{r}
+glimpse(client_requests)
+```
+
+### Шаг 2. Анализ точек доступа
+
+Найдены небезопасные точки доступа.
+
+```{r}
+OpnPrivacy <- access_points %>% filter(Privacy == 'OPN') %>% select(BSSID)
+OpnPrivacy = unique(OpnPrivacy)
+head(OpnPrivacy)
+```
+
+Определены производители каждого обнаруженного устройства.
+
+```{r}
+fabricator <- sapply(OpnPrivacy, function(mac) substr(mac, 1, 8)) %>% unique()
+
+fabricator
+```
+
+```         
+E8:28:C1 - Eltex Enterprise Ltd.
+00:25:00 - Apple, Inc.
+E0:D9:E3 - Eltex Enterprise Ltd.
+00:26:99 - Cisco Systems, Inc
+00:03:7A - Taiyo Yuden Co., Ltd.
+00:03:7F - Atheros Communications, Inc.
+```
+
+Остальные производители не были найдены с помощью интренет-ресурса [ouilookup.com](https://ouilookup.com/).
+
+Выявлены устройства, использующие последнюю версию протокола шифрования WPA3, и названия точек доступа, реализованных на этих устройствах.
+
+```{r}
+access_points %>% filter(str_detect(access_points$Privacy, 'WPA3') == TRUE) %>% select(BSSID, ESSID)
+```
+
+Отсортированы точки доступа по интервалу времени в минутах, в течение которого они находились на связи, по убыванию.
+
+```{r}
+access_points %>% mutate(duration = as.numeric(difftime(Last.time.seen, First.time.seen, units = "secs"))) %>% arrange(desc(duration)) %>% select(BSSID, duration) %>% head(10)
+```
+
+\
+Составлен топ-10 самых быстрых точек доступа.
+
+```{r}
+access_points %>% arrange(desc(Speed)) %>%  select(BSSID, Speed) %>% head(10)
+```
+
+Отсортированы точки доступа по частоте отправки запросов (beacons) в единицу времени по их убыванию.
+
+```{r}
+
+access_points %>% mutate(duration = as.numeric(difftime(Last.time.seen, First.time.seen, units = "secs"))) %>% filter(as.integer(duration) != 0) %>% mutate(beacons_per_second = X..beacons / as.integer(duration)) %>% arrange(desc(beacons_per_second)) %>% select(BSSID, X..beacons, duration, beacons_per_second ) %>% head()
+
+
+```
+
+### Шаг 3. Анализ данных клиентов
+
+Определены производители каждого обраруженного устройства.
+
+```{r}
+fabricator_client_MAC <- client_requests %>% select(BSSID) %>% filter(BSSID != "(not associated)" & !is.na(BSSID)) %>% arrange(BSSID)
+sapply(fabricator_client_MAC, function(i) substr(i, 1, 8)) %>% unique() 
+```
+
+```         
+00:03:7F - Atheros Communications, Inc.
+
+00:0D:97 - Hitachi Energy USA Inc.
+
+00:23:EB - Cisco Systems, Inc
+
+00:25:00 - Apple, Inc.
+
+00:26:99 - Cisco Systems, Inc
+
+08:3A:2F - Guangzhou Juan Intelligent Tech Joint Stock Co.,Ltd
+
+0C:80:63 - Tp-Link Technologies Co.,Ltd.
+
+DC:09:4C - Huawei Technologies Co.,Ltd
+
+E0:D9:E3 - Eltex Enterprise Ltd.
+
+E8:28:C1 - Eltex Enterprise Ltd.
+```
+
+Остальные производители не были найдены с помощью интренет-ресурса [ouilookup.com](https://ouilookup.com/).
+
+Обнаружены устройства, которые НЕ рандомизируют свой MAC адрес.
+
+```{r}
+non_randomized_devices <- client_requests %>% filter(!substr(Station.MAC, 2, 2) %in% c("2", "6", "A", "E"))  %>% select(Station.MAC) 
+head(non_randomized_devices)
+
+
+```
+
+Кластеризованы запросы от устройств к точкам доступа по их именам.
+
+```{r}
+grouped_data <- client_requests  %>%
+  group_by(Probed.ESSIDs) %>% summarize(
+    unique_devices = n_distinct(Station.MAC), 
+    first_time_seen = min(First.time.seen),  
+    last_time_seen = max(Last.time.seen)
+  )
+head(grouped_data)
+```
+
+\
+Время появления устройства в зоне радиовидимости и время выхода его из нее представлены в first_time_seen иlast_time_seen соответсвенно.
+
+Определена стабильность уровня сигнала внури кластера во времени. Выявлен наиболее стабильный кластер.
+
+```{r}
+client_requests %>% mutate(duration = as.integer(difftime(Last.time.seen, First.time.seen))) %>% filter(duration != 0) %>% arrange(desc(duration)) %>%  filter(!is.na(Probed.ESSIDs)) %>%  group_by(Probed.ESSIDs) %>% summarise(Mean = mean(duration), Sd = sd(duration)) %>% filter(!is.na(Sd) & Sd != 0) %>%  arrange(Sd) %>% select(Probed.ESSIDs, Mean, Sd) %>%
+  head(1)
+```
+
+## Оценка результата
+
+1.  Получены практические навыки использования языка программирования R для обработки данных
+2.  Закреплены знания базовых типов данных языка R
+3.  Получены практические навыки использования функций обработки данных пакета dplyr
+4.  Закреплены знания основных функций обработки данных экосистемы tidyverse языка R
+
+## Вывод
+
+В результате выполнения работы были закреплены умения работы с инструментами обработки и анализа данных на языке R.
